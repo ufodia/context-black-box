@@ -10,16 +10,19 @@ const quantities=(s:string)=>(s.match(/\d+(?:[.,]\d+)*/g)??[]).sort().join('|');
 export function analyze(summary:string,constraints:readonly Constraint[]):Finding[]{
   if(summary.length>1_000_000)throw new Error('Summary exceeds the one-million-character limit.');
   const normalized=normalize(summary);const sentences=summary.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
-  // Tokenize once, rather than reprocessing the entire summary for each pinned rule.
-  const sentenceWords=sentences.map(sentence=>words(sentence));
+  // Index each unique sentence token once. Rules visit only sentences containing
+  // one of their words, rather than scanning every word against every sentence.
+  const occurrences=new Map<string,number[]>();
+  sentences.forEach((sentence,index)=>{for(const word of words(sentence)){const indexes=occurrences.get(word);if(indexes)indexes.push(index);else occurrences.set(word,[index]);}});
   return constraints.map(c=>{
     const quote=normalize(c.quote);if(!quote)return{constraint:c,state:'missing',candidate:'',reason:'Empty rule.',overlap:0};
     // Token boundaries prevent a short quote (e.g. "ship") matching "shipping".
     let position=normalized.indexOf(quote),exact=false;
-    while(position>=0){const before=normalized[position-1]??'',after=normalized[position+quote.length]??'';if(!/[\p{L}\p{N}]/u.test(before)&&!/[\p{L}\p{N}]/u.test(after)){exact=true;break;}position=normalized.indexOf(quote,position+1);}
+    while(position>=0){const before=normalized.slice(Math.max(0,position-2),position),after=normalized.slice(position+quote.length,position+quote.length+2);if(!/[\p{L}\p{N}\p{M}]$/u.test(before)&&!/^[\p{L}\p{N}\p{M}]/u.test(after)){exact=true;break;}position=normalized.indexOf(quote,position+1);}
     if(exact)return{constraint:c,state:'exact',candidate:c.quote,reason:'The source wording appears in the supplied summary. Check surrounding context before relying on it.',overlap:1};
-    const source=words(c.quote);let best='',score=0;
-    for(let i=0;i<sentences.length;i++){const target=sentenceWords[i];let common=0;for(const word of source)if(target.has(word))common++;const overlap=common/Math.max(source.size,1);if(overlap>score){best=sentences[i];score=overlap;}}
+    const source=words(c.quote),matches=new Map<number,number>();let best='',score=0,bestIndex=Infinity;
+    for(const word of source)for(const index of occurrences.get(word)??[])matches.set(index,(matches.get(index)??0)+1);
+    for(const[index,common]of matches){const overlap=common/Math.max(source.size,1);if(overlap>score||overlap===score&&index<bestIndex){best=sentences[index];score=overlap;bestIndex=index;}}
     if(score<.45)return{constraint:c,state:'missing',candidate:best,reason:'No close textual candidate found. A different paraphrase may still express this rule.',overlap:score};
     const changes=[];if(negative(c.quote)!==negative(best))changes.push('Negation may have changed.');if(quantities(c.quote)!==quantities(best))changes.push('Numbers may have changed.');
     if(/\b(may|might|could|can)\b/i.test(c.quote)&&/\b(will|must|shall)\b/i.test(best))changes.push('A possibility may have become a commitment.');
