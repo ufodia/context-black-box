@@ -9,6 +9,9 @@
 
 # Context Black Box
 
+**[Open the live app ↗](https://context-black-box.vercel.app/)** · [Deployment guide](docs/DEPLOYMENT.md)
+
+
 **Keep what matters.**
 
 A handoff can preserve the project description while dropping a budget, approval boundary, or uncertainty. Context Black Box compares user-selected source excerpts with a supplied summary and gives unresolved rules a traceable route into the next conversation.
