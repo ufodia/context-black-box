@@ -2,6 +2,17 @@ import{describe,it,expect}from'vitest';import{analyze,validateConstraints,recove
 const rule=(quote:string):Constraint=>({id:quote,quote,sourceStart:0,sourceEnd:quote.length,confirmed:false});
 describe('constraint loss analysis',()=>{
 it('recognizes exact text across whitespace and case',()=>{expect(analyze('NEVER  send an email.',[rule('Never send an email.')])[0].state).toBe('exact');});
+it('matches sentence-final punctuation without requiring it in the summary',()=>{expect(analyze('Use PostgreSQL 16 for the database.',[rule('Use PostgreSQL 16 for the database.')])[0].state).toBe('exact');expect(analyze('Use PostgreSQL 16 for the database',[rule('Use PostgreSQL 16 for the database.')])[0].state).toBe('exact');});
+it('retains exact matching for multi-sentence excerpts',()=>expect(analyze('Deploy on Friday. Keep backups.',[rule('Deploy on Friday. Keep backups.')])[0].state).toBe('exact'));
+it('handles a million characters of repeated negated occurrences without a quadratic context scan',()=>{const text='Do not deploy on Friday. '.repeat(40000);expect(text).toHaveLength(1_000_000);const f=analyze(text,[rule('deploy on Friday')])[0];expect(f.state).toBe('review');expect(f.reason).toMatch(/negation/i);},10000);
+it('does not label quoted wording under negation or denial as exact',()=>{for(const [quote,summary] of [['deploy on Friday','The team decided they should never deploy on Friday.'],['refunds are allowed after 30 days','It is false that refunds are allowed after 30 days.'],['deploy on Friday','We should deploy on Friday without approval.']]){const f=analyze(summary,[rule(quote)])[0];expect(f.state).toBe('review');expect(f.reason).toMatch(/negation|denial/i);}});
+it('keeps unrelated negation outside the matching clause from changing exact status',()=>{expect(analyze('Do not deploy on Monday, but deploy on Friday.',[rule('deploy on Friday')])[0].state).toBe('exact');expect(analyze('No budget change. Deploy on Friday.',[rule('deploy on Friday')])[0].state).toBe('exact');});
+it('scopes English and Turkish negation to the matched clause',()=>{
+  expect(analyze('Asla Cuma günü dağıtım yap.',[rule('Cuma günü dağıtım yap')])[0].state).toBe('review');
+  expect(analyze('Deploy on Friday and do not ship on Sunday.',[rule('Deploy on Friday')])[0].state).toBe('exact');
+  expect(analyze('Do not deploy on Friday and notify the team.',[rule('deploy on Friday')])[0].state).toBe('review');
+  expect(analyze('Do not ship on Sunday and deploy on Friday.',[rule('deploy on Friday')])[0].state).toBe('review');
+});
 it('does not confuse substring tokens with exact evidence',()=>{expect(analyze('We are shipping tomorrow.',[rule('ship')])[0].state).not.toBe('exact');});
 it('keeps astral letters and combining marks inside token boundaries',()=>{for(const text of ['𐐀ship','ship𐐀','ship\u20dd'])expect(analyze(text,[rule('ship')])[0].state).not.toBe('exact');expect(analyze('𐐀 ship 𐐀',[rule('ship')])[0].state).toBe('exact');});
 it('flags lost negation and numerical mutation for review',()=>{const f=analyze('Send an email without approval with budget 3200.',[rule('Never send an email without approval with budget 2400.')])[0];expect(f.state).toBe('review');expect(f.reason).toContain('Numbers');});

@@ -21,6 +21,19 @@ async function getDownload(page,button){
   return {download,content:await readFile(await download.path(),'utf8')};
 }
 
+test('pinned punctuation matches while a negated clause needs review',async({page})=>{
+  await page.goto('/');
+  const source='Deploy on Friday.';
+  await page.locator('#source').fill(source);
+  await page.locator('#source').evaluate((el)=>{el.focus();el.setSelectionRange(0,el.value.length);});
+  await page.locator('#pin').click();
+  await page.locator('#summary').fill('Deploy on Friday.');await page.locator('#compare').click();
+  await expect(page.locator('#exact-count')).toHaveText('1');
+  await page.locator('#summary').fill('The team decided they should never deploy on Friday.');await page.locator('#compare').click();
+  await expect(page.locator('#review-count')).toHaveText('1');
+  await expect(page.locator('.rule')).toContainText('Negation or denial');
+});
+
 test('local workbench: analysis, evidence, export and responsive layout',async({page},testInfo)=>{
   const errors=[];
   page.on('pageerror',error=>errors.push(error.message));

@@ -4,22 +4,46 @@ export interface Finding{constraint:Constraint;state:State;candidate:string;reas
 const normalize=(s:string)=>s.normalize('NFKC').toLocaleLowerCase('en').replace(/[“”]/g,'"').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim();
 const stop=new Set('a an the to of in on and or is are be for that it this we i you our your with as by at'.split(' '));
 const words=(s:string)=>new Set((normalize(s).match(/[\p{L}\p{N}]+/gu)??[]).filter(w=>!stop.has(w)));
-const negative=(s:string)=>/\b(no|not|never|without|cannot|can't|don't|doesn't|mustn't|shouldn't|won't)\b/i.test(s);
+const negative=(s:string)=>/(?<![\p{L}\p{N}\p{M}])(?:no|not|never|without|cannot|can't|don't|doesn't|mustn't|shouldn't|won't|false|forbidden|prohibited|asla|değil|hayır)(?![\p{L}\p{N}\p{M}])/iu.test(s);
+const negativeMarkers=/(?<![\p{L}\p{N}\p{M}])(?:no|not|never|without|cannot|can't|don't|doesn't|mustn't|shouldn't|won't|false|forbidden|prohibited|asla|değil|hayır)(?![\p{L}\p{N}\p{M}])/giu;
+function lowerBound(values:number[],target:number):number{let low=0,high=values.length;while(low<high){const mid=(low+high)>>>1;if(values[mid]<target)low=mid+1;else high=mid;}return low;}
 const quantities=(s:string)=>(s.match(/\d+(?:[.,]\d+)*/g)??[]).sort().join('|');
 /** Exact textual matches are distinguished from heuristic candidates; no semantic verdict. */
 export function analyze(summary:string,constraints:readonly Constraint[]):Finding[]{
   if(summary.length>1_000_000)throw new Error('Summary exceeds the one-million-character limit.');
-  const normalized=normalize(summary);const sentences=summary.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
+  const normalizedSummary=normalize(summary);const sentences=summary.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
+  // Pre-index clause boundaries and negation positions once. Looking at the
+  // full prefix for every repeated quote would become quadratic on long input.
+  const leftEnds=[...normalizedSummary.matchAll(/[.;:!?]|\b(?:but|however|yet)\b/gi)].map(m=>m.index!+m[0].length);
+  const rightStarts=[...normalizedSummary.matchAll(/[.;:!?]|\b(?:and|or|but|however|yet)\b/gi)].map(m=>m.index!);
+  const negationPositions=[...normalizedSummary.matchAll(negativeMarkers)].map(m=>m.index!);
+  const hasNegation=(start:number,end:number)=>{const i=lowerBound(negationPositions,start);return i<negationPositions.length&&negationPositions[i]<end;};
   // Index each unique sentence token once. Rules visit only sentences containing
   // one of their words, rather than scanning every word against every sentence.
   const occurrences=new Map<string,number[]>();
   sentences.forEach((sentence,index)=>{for(const word of words(sentence)){const indexes=occurrences.get(word);if(indexes)indexes.push(index);else occurrences.set(word,[index]);}});
   return constraints.map(c=>{
-    const quote=normalize(c.quote);if(!quote)return{constraint:c,state:'missing',candidate:'',reason:'Empty rule.',overlap:0};
+    const quote=normalize(c.quote).replace(/[.!?]+$/,'').trim();if(!quote)return{constraint:c,state:'missing',candidate:'',reason:'Empty rule.',overlap:0};
     // Token boundaries prevent a short quote (e.g. "ship") matching "shipping".
-    let position=normalized.indexOf(quote),exact=false;
-    while(position>=0){const before=normalized.slice(Math.max(0,position-2),position),after=normalized.slice(position+quote.length,position+quote.length+2);if(!/[\p{L}\p{N}\p{M}]$/u.test(before)&&!/^[\p{L}\p{N}\p{M}]/u.test(after)){exact=true;break;}position=normalized.indexOf(quote,position+1);}
-    if(exact)return{constraint:c,state:'exact',candidate:c.quote,reason:'The source wording appears in the supplied summary. Check surrounding context before relying on it.',overlap:1};
+    let negatedMatch='';
+    let position=normalizedSummary.indexOf(quote);
+    while(position>=0){
+        const before=normalizedSummary.slice(Math.max(0,position-2),position),after=normalizedSummary.slice(position+quote.length,position+quote.length+2);
+        if(!/[\p{L}\p{N}\p{M}]$/u.test(before)&&!/^[\p{L}\p{N}\p{M}]/u.test(after)){
+          // Restrict contextual negation to this clause; an unrelated preceding
+          // sentence or contrast ("not X, but Y") must not invert the quote.
+          const leftIndex=lowerBound(leftEnds,position+1)-1;
+          const leftStart=leftIndex<0?0:leftEnds[leftIndex];
+          const afterQuote=position+quote.length;
+          const rightIndex=lowerBound(rightStarts,afterQuote);
+          const rightEnd=rightIndex===rightStarts.length?normalizedSummary.length:rightStarts[rightIndex];
+          if(hasNegation(leftStart,position)||hasNegation(afterQuote,rightEnd)){
+            if(!negatedMatch){const start=Math.max(leftStart,position-300),end=Math.min(rightEnd,afterQuote+300);negatedMatch=`${start>leftStart?'…':''}${normalizedSummary.slice(start,end).trim()}${end<rightEnd?'…':''}`;}
+          }else return{constraint:c,state:'exact',candidate:c.quote,reason:'The source wording appears in the supplied summary. Check surrounding context before relying on it.',overlap:1};
+        }
+        position=normalizedSummary.indexOf(quote,position+1);
+    }
+    if(negatedMatch)return{constraint:c,state:'review',candidate:negatedMatch,reason:'Negation or denial near the quoted wording may change its meaning.',overlap:1};
     const source=words(c.quote),matches=new Map<number,number>();let best='',score=0,bestIndex=Infinity;
     for(const word of source)for(const index of occurrences.get(word)??[])matches.set(index,(matches.get(index)??0)+1);
     for(const[index,common]of matches){const overlap=common/Math.max(source.size,1);if(overlap>score||overlap===score&&index<bestIndex){best=sentences[index];score=overlap;bestIndex=index;}}
